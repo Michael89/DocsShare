@@ -1,24 +1,18 @@
 # Neural Network Object Detection Library - Interface Specification
 
-## 1. Overview
+## Overview
 
-**The end-user should only need to:**
-1. Initialize the detector with a model path
-2. Pass a grayscale image in any resolution
-3. Receive structured detection results with exact object positions
-
-All preprocessing (resizing, normalization) and post-processing (heatmap analysis, peak detection, coordinate transformation) are handled internally.
+Simple API for thermal image object detection. User provides grayscale image + IMU data, library handles all preprocessing, inference, and post-processing internally.
 
 ---
 
-## 2. API Design
+## API
 
-### 2.1 Initialization
+### Initialization
 
 ```python
 from detection_library import ObjectDetector
 
-# Initialize detector with model path
 detector = ObjectDetector(
     model_path="/path/to/model_int8.onnx",
     confidence_threshold=0.5,
@@ -27,171 +21,103 @@ detector = ObjectDetector(
 ```
 
 **Parameters:**
-- `model_path` (str, required): Path to ONNX model file
-- `confidence_threshold` (float, optional): Minimum confidence for detection (0.0-1.0). Default: 0.5
-- `max_detections` (int, optional): Maximum number of detections to return. Default: 10
-
-**Behavior:**
-- Load ONNX model
-- Extract model input/output shapes
-- Initialize preprocessing/postprocessing pipelines
-- Validate model compatibility
+- `model_path` (str): Path to ONNX model file
+- `confidence_threshold` (float, optional): Minimum confidence (0.0-1.0). Default: 0.5
+- `max_detections` (int, optional): Max detections to return. Default: 10
 
 ---
 
-### 2.2 Detection Method
+### Detection
 
 ```python
-# Detect objects in a single image
-detections = detector.detect(image)
+detections = detector.detect(
+    image,              # numpy.ndarray: grayscale (H, W), uint8, any resolution
+    imu_data,           # dict: IMU information
+    timestamp           # float: timestamp in seconds
+)
 ```
 
-**Input Parameters:**
-- `image` (numpy.ndarray, required):
-  - Format: Grayscale (H, W) - **single channel only**
-  - Type: `uint8` (0-255)
-  - Resolution: Any size (will be automatically resized internally)
+**Parameters:**
+- `image` (numpy.ndarray): Grayscale (H, W), uint8, any resolution
+- `imu_data` (dict): IMU data with keys:
+  ```python
+  {
+      "roll": 0.0,      # float: roll angle in degrees
+      "pitch": 0.0,     # float: pitch angle in degrees
+      "yaw": 0.0        # float: yaw angle in degrees
+  }
+  ```
+- `timestamp` (float): Timestamp in seconds
 
-**Return Value:**
+**Returns:**
 ```python
-# List of Detection objects
 [
-    Detection(
-        position=(x, y),           # Center point in original image coordinates
-        confidence=0.87            # Confidence score (0.0-1.0)
-    ),
-    Detection(
-        position=(x2, y2),
-        confidence=0.72
-    ),
+    [x, y, confidence],    # [float, float, float]: x, y in original image coords, confidence (0.0-1.0)
+    [x2, y2, confidence2],
     ...
 ]
 ```
 
----
-
-### 2.3 Detection Object Structure
-
-```python
-class Detection:
-    """Single object detection result"""
-
-    position: Tuple[float, float]          # (x, y) center in original image coordinates
-    confidence: float                      # Detection confidence (0.0-1.0)
-```
+**Array format:** Each detection is `[x, y, confidence]`
+- `x` (float): X coordinate of center point in original image
+- `y` (float): Y coordinate of center point in original image
+- `confidence` (float): Detection confidence score (0.0-1.0)
 
 ---
 
-## 3. Internal Processing Pipeline
+## Internal Processing (What Library Must Handle)
 
-The library handles these steps internally (transparent to the user):
+### Preprocessing
+1. Validate image (single channel grayscale, uint8)
+2. Resize to model input dimensions (e.g., 480×384)
+3. Normalize to [0.0, 1.0]
+4. Reshape to (1, 1, H, W) for ONNX
 
-### 3.1 Preprocessing
-1. **Input Validation**
-   - Verify image is single channel grayscale (H, W)
-   - Verify image type is uint8
-   - Raise error if multi-channel image or wrong type provided
+### Inference
+Run ONNX model, extract heatmap output
 
-2. **Resizing**
-   - Resize image to model input dimensions (e.g., 480×384)
-   - Store scaling factors for coordinate transformation
-   - Use appropriate interpolation (e.g., `cv2.INTER_LINEAR`)
-
-3. **Normalization**
-   - Convert pixel values to float32
-   - Normalize to [0.0, 1.0] range (divide by 255.0)
-
-4. **Dimension Reshaping**
-   - Add batch dimension: (H, W) → (1, 1, H, W)
-   - Ensure correct dimension order for ONNX model
-
-### 3.2 Inference
-1. Run ONNX model inference
-2. Extract output heatmap (shape: [1, 1, H, W])
-3. Remove batch dimensions: (1, 1, H, W) → (H, W)
-
-### 3.3 Post-processing
-1. **Peak Detection**
-   - Find local maxima in heatmap
-   - Filter peaks below confidence threshold
-
-2. **Coordinate Transformation**
-   - Transform heatmap coordinates to original image coordinates
-   - Apply inverse scaling transformation
-   - Ensure coordinates are within image bounds
-
-3. **Sorting**
-   - Sort detections by confidence (highest first)
-   - Limit to `max_detections`
+### Post-processing
+1. Find local maxima in heatmap
+2. Filter by confidence threshold
+3. Transform coordinates back to original image resolution
+4. Sort by confidence, limit to max_detections
 
 ---
 
-## 4. Implementation Requirements
+## Usage Examples
 
-### 4.1 Language Options
-
-**Option 1: Pure Python** (Recommended)
-- Easier to develop and maintain
-- Good integration with Python ecosystem
-- Sufficient performance for most use cases
-- Dependencies: `numpy`, `opencv-python`, `onnxruntime`
-
-**Option 2: C++ with Python Bindings** (For performance-critical applications)
-- Better performance (especially for post-processing)
-- More complex development and deployment
-- Use `pybind11` or `ctypes` for Python bindings
-- Dependencies: OpenCV C++, ONNX Runtime C++ API
-
-### 4.2 Minimum Dependencies
-- Python ≥ 3.9
-- `numpy` ≥ 1.24.3
-- `opencv-python` ≥ 4.10.0
-- `onnxruntime` ≥ 1.18.1
-
----
-
-## 5. Usage Examples
-
-### 5.1 Basic Usage
+### Basic Detection
 
 ```python
 from detection_library import ObjectDetector
 import cv2
 
-# Initialize detector
-detector = ObjectDetector("model_int8.onnx", confidence_threshold=0.5, max_detections=10)
+detector = ObjectDetector("model_int8.onnx")
 
-# Load image (must be grayscale, uint8)
-image = cv2.imread("thermal_image.jpg", cv2.IMREAD_GRAYSCALE)  # Any resolution
+image = cv2.imread("thermal.jpg", cv2.IMREAD_GRAYSCALE)
+imu_data = {"roll": 1.2, "pitch": -0.5, "yaw": 45.0}
+timestamp = 1234567890.123
 
-# Detect objects
-detections = detector.detect(image)
+detections = detector.detect(image, imu_data, timestamp)
 
-# Process results
 for det in detections:
-    print(f"Object at ({det.position[0]:.1f}, {det.position[1]:.1f}), "
-          f"confidence: {det.confidence:.2f}")
-
-    # Draw on image
-    x, y = det.position
+    x, y, confidence = det
+    print(f"Object at ({x:.1f}, {y:.1f}), confidence: {confidence:.2f}")
     cv2.circle(image, (int(x), int(y)), 5, 255, -1)
-    cv2.putText(image, f"{det.confidence:.2f}", (int(x)+10, int(y)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255, 2)
 
 cv2.imshow("Detections", image)
 cv2.waitKey(0)
 ```
 
-### 5.2 Video Processing
+### Video Processing
 
 ```python
 from detection_library import ObjectDetector
 import cv2
+import time
 
-# Initialize detector
-detector = ObjectDetector("model_int8.onnx", confidence_threshold=0.6, max_detections=5)
+detector = ObjectDetector("model_int8.onnx", confidence_threshold=0.6)
 
-# Open video
 cap = cv2.VideoCapture("thermal_video.mp4")
 
 while cap.isOpened():
@@ -199,19 +125,20 @@ while cap.isOpened():
     if not ret:
         break
 
-    # Convert to grayscale if needed
     if len(frame.shape) == 3:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Detect objects (frame can be any resolution)
-    detections = detector.detect(frame)
+    # Get IMU data from your IMU source
+    imu_data = get_current_imu()  # Your function
+    timestamp = time.time()
 
-    # Visualize
+    detections = detector.detect(frame, imu_data, timestamp)
+
     for det in detections:
-        x, y = det.position
+        x, y, confidence = det
         cv2.circle(frame, (int(x), int(y)), 5, 255, -1)
 
-    cv2.imshow("Video Detections", frame)
+    cv2.imshow("Detections", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
@@ -219,31 +146,31 @@ cap.release()
 cv2.destroyAllWindows()
 ```
 
-### 5.3 Different Configurations
+---
 
-```python
-from detection_library import ObjectDetector
+## Implementation Requirements
 
-# High confidence detections
-detector_strict = ObjectDetector("model_int8.onnx", confidence_threshold=0.8, max_detections=5)
+### Language Options
+- **Python** (recommended): `numpy`, `opencv-python`, `onnxruntime`
+- **C++** (for performance): OpenCV C++, ONNX Runtime C++ API, Python bindings via pybind11
 
-# More permissive detections
-detector_permissive = ObjectDetector("model_int8.onnx", confidence_threshold=0.3, max_detections=20)
+### Dependencies
+- Python ≥ 3.9
+- numpy ≥ 1.24.3
+- opencv-python ≥ 4.10.0
+- onnxruntime ≥ 1.18.1
 
-# Detect on grayscale image
-image = cv2.imread("image.jpg", cv2.IMREAD_GRAYSCALE)
-detections = detector_strict.detect(image)
-```
+### Performance Target
+- < 50ms per detection on CPU
+- > 20 FPS for video (640×480)
 
 ---
 
-## 6. Error Handling
-
-The library must handle and report errors gracefully:
+## Error Handling
 
 ```python
 class DetectionError(Exception):
-    """Base exception for detection errors"""
+    """Base exception"""
     pass
 
 class ModelLoadError(DetectionError):
@@ -251,106 +178,34 @@ class ModelLoadError(DetectionError):
     pass
 
 class InvalidImageError(DetectionError):
-    """Invalid input image format"""
-    pass
-
-class InferenceError(DetectionError):
-    """Error during model inference"""
+    """Invalid input image"""
     pass
 ```
 
-**Expected Behaviors:**
-- Invalid model path → `ModelLoadError` with clear message
-- Multi-channel image provided → `InvalidImageError`: "Image must be single channel grayscale (H, W)"
-- Wrong image type (not uint8) → `InvalidImageError`: "Image must be uint8 type"
-- Invalid image format → `InvalidImageError` with format details
-- Inference failure → `InferenceError` with model details
-- Empty detections → Return empty list (not an error)
+**Behavior:**
+- Invalid model path → `ModelLoadError`
+- Multi-channel image or wrong type → `InvalidImageError`
+- Empty detections → Return empty list
 
 ---
 
-## 7. Documentation Requirements
+## Deliverables
 
-The implementation must include:
-
-1. **README.md**
-   - Installation instructions
-   - Quick start guide
-   - API reference
-
-2. **API Documentation**
-   - Complete class/method documentation
-   - Parameter descriptions
-   - Return value specifications
-   - Code examples
-
-3. **User Guide**
-   - Configuration guide
-   - Performance tuning tips
-   - Troubleshooting section
-
----
-
-## 8. Deliverables
-
-### 8.1 Required Files
 ```
 detection_library/
-├── __init__.py              # Main module exports
-├── detector.py              # ObjectDetector class
-├── detection.py             # Detection class
-├── preprocessing.py         # Image preprocessing functions
-├── postprocessing.py        # Heatmap post-processing functions
-└── exceptions.py            # Custom exceptions
+├── __init__.py
+├── detector.py
+├── preprocessing.py
+├── postprocessing.py
+└── exceptions.py
 
 examples/
 ├── basic_detection.py
 └── video_processing.py
 
-docs/
-├── README.md
-└── API.md
-
-requirements.txt             # Python dependencies
-setup.py or pyproject.toml  # Package configuration
+requirements.txt
+setup.py or pyproject.toml
+README.md
 ```
 
-### 8.2 Package Structure (Python)
-```python
-# Installable package
-pip install detection_library
-
-# Import and use
-from detection_library import ObjectDetector, Detection
-```
-
-### 8.3 Package Structure (C++ with Python bindings)
-```
-detection_library/
-├── src/                     # C++ source files
-│   ├── detector.cpp
-│   ├── preprocessing.cpp
-│   └── postprocessing.cpp
-├── include/                 # C++ headers
-│   └── detection_library/
-│       ├── detector.h
-│       └── types.h
-├── python/                  # Python bindings
-│   ├── __init__.py
-│   └── bindings.cpp (pybind11)
-└── CMakeLists.txt           # Build configuration
-```
-
----
-
-## 9. Summary
-
-This specification defines a simple, clean interface for neural network-based object detection:
-
-**Input:** Grayscale image (uint8, any resolution)
-**Output:** List of detections with position and confidence
-**Internal:** All preprocessing, inference, and post-processing handled by the library
-
-The implementation should prioritize simplicity and ease of use while maintaining good performance.
-
----
+**Note:** Implementation can be in pure Python or C++ with Python bindings (pybind11). Both should provide the same API interface.
