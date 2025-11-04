@@ -37,22 +37,24 @@ detector.load_model("/path/to/model_int8.onnx")
 ```python
 detections = detector.detect(
     image,              # numpy.ndarray: grayscale (H, W), uint8, any resolution
-    imu_data,           # dict: IMU information
-    timestamp           # float: timestamp in seconds
+    frame_timestamp,    # float: frame timestamp in seconds
+    attitude,           # dict: attitude information
+    attitude_timestamp  # float: attitude timestamp in seconds
 )
 ```
 
 **Parameters:**
 - `image` (numpy.ndarray): Grayscale (H, W), uint8, any resolution
-- `imu_data` (dict): IMU data with keys:
+- `frame_timestamp` (float): Frame timestamp in seconds
+- `attitude` (dict): Attitude data with keys:
   ```python
   {
-      "roll": 0.0,      # float: roll angle in degrees
-      "pitch": 0.0,     # float: pitch angle in degrees
-      "yaw": 0.0        # float: yaw angle in degrees
+      "roll": 0.0,      # float: roll angle in radians
+      "pitch": 0.0,     # float: pitch angle in radians
+      "yaw": 0.0        # float: yaw angle in radians
   }
   ```
-- `timestamp` (float): Timestamp in seconds
+- `attitude_timestamp` (float): Attitude timestamp in seconds
 
 **Returns:**
 ```python
@@ -101,10 +103,11 @@ detector = ObjectDetector()
 detector.load_model("model_int8.onnx")
 
 image = cv2.imread("thermal.jpg", cv2.IMREAD_GRAYSCALE)
-imu_data = {"roll": 1.2, "pitch": -0.5, "yaw": 45.0}
-timestamp = 1234567890.123
+frame_timestamp = 1234567890.123
+attitude = {"roll": 0.021, "pitch": -0.009, "yaw": 0.785}  # radians
+attitude_timestamp = 1234567890.120
 
-detections = detector.detect(image, imu_data, timestamp)
+detections = detector.detect(image, frame_timestamp, attitude, attitude_timestamp)
 
 for det in detections:
     x, y, confidence = det
@@ -135,11 +138,12 @@ while cap.isOpened():
     if len(frame.shape) == 3:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Get IMU data from your IMU source
-    imu_data = get_current_imu()  # Your function
-    timestamp = time.time()
+    # Get frame and attitude with timestamps
+    frame_timestamp = time.time()
+    attitude = get_current_attitude()  # Your function: returns {"roll": ..., "pitch": ..., "yaw": ...} in radians
+    attitude_timestamp = get_attitude_timestamp()  # Your function
 
-    detections = detector.detect(frame, imu_data, timestamp)
+    detections = detector.detect(frame, frame_timestamp, attitude, attitude_timestamp)
 
     for det in detections:
         x, y, confidence = det
@@ -181,10 +185,10 @@ If implementing in C++, the API should provide the same interface:
 
 namespace detection_library {
 
-struct IMUData {
-    double roll;
-    double pitch;
-    double yaw;
+struct AttitudeRad {
+    double roll;   // radians
+    double pitch;  // radians
+    double yaw;    // radians
 };
 
 class ObjectDetector {
@@ -200,12 +204,13 @@ public:
 
     // Returns vector of detections: [[x, y, confidence], ...]
     std::vector<std::vector<double>> detect(
-        const uint8_t* image_data,    // Grayscale image data
-        size_t width,                 // Image width
-        size_t height,                // Image height
-        size_t stride,                // Row stride (bytes per row, usually == width for grayscale)
-        const IMUData& imu_data,
-        double timestamp
+        const uint8_t* image_data,       // Grayscale image data
+        size_t width,                    // Image width
+        size_t height,                   // Image height
+        size_t stride,                   // Row stride (bytes per row, usually == width for grayscale)
+        double frame_timestamp,          // Frame timestamp in seconds
+        const AttitudeRad& attitude,     // Attitude angles in radians
+        double attitude_timestamp        // Attitude timestamp in seconds
     );
 
 private:
@@ -234,8 +239,9 @@ using namespace detection_library;
 std::vector<std::vector<double>> detect_wrapper(
     ObjectDetector& self,
     py::array_t<uint8_t> image,
-    py::dict imu_data,
-    double timestamp
+    double frame_timestamp,
+    py::dict attitude,
+    double attitude_timestamp
 ) {
     // Extract numpy array
     auto buf = image.request();
@@ -249,14 +255,14 @@ std::vector<std::vector<double>> detect_wrapper(
     size_t width = buf.shape[1];
     size_t stride = buf.strides[0];  // Bytes per row
 
-    // Extract IMU data from dict
-    IMUData imu;
-    imu.roll = imu_data["roll"].cast<double>();
-    imu.pitch = imu_data["pitch"].cast<double>();
-    imu.yaw = imu_data["yaw"].cast<double>();
+    // Extract attitude data from dict
+    AttitudeRad att;
+    att.roll = attitude["roll"].cast<double>();
+    att.pitch = attitude["pitch"].cast<double>();
+    att.yaw = attitude["yaw"].cast<double>();
 
     // Call C++ detect
-    return self.detect(image_data, width, height, stride, imu, timestamp);
+    return self.detect(image_data, width, height, stride, frame_timestamp, att, attitude_timestamp);
 }
 
 PYBIND11_MODULE(detection_library, m) {
@@ -272,8 +278,9 @@ PYBIND11_MODULE(detection_library, m) {
              "Load ONNX model (can throw exception)")
         .def("detect", &detect_wrapper,
              py::arg("image"),
-             py::arg("imu_data"),
-             py::arg("timestamp"),
+             py::arg("frame_timestamp"),
+             py::arg("attitude"),
+             py::arg("attitude_timestamp"),
              "Detect objects in image");
 }
 ```
@@ -282,8 +289,9 @@ PYBIND11_MODULE(detection_library, m) {
 - Constructor is exception-free, only sets parameters
 - `load_model()` handles file I/O and can throw exceptions
 - Image data passed as standard pointer: `uint8_t* image_data, size_t width, size_t height, size_t stride`
+- Two timestamps: `frame_timestamp` and `attitude_timestamp`
 - pybind11 wrapper extracts numpy array pointer and dimensions
-- Python dict for IMU data is converted to C++ struct
+- Python dict for attitude is converted to C++ `AttitudeRad` struct (angles in radians)
 - Returns `std::vector<std::vector<double>>` (auto-converts to Python list of lists)
 
 ---
