@@ -160,10 +160,6 @@ cv2.destroyAllWindows()
 - opencv-python ≥ 4.10.0
 - onnxruntime ≥ 1.18.1
 
-### Performance Target
-- < 50ms per detection on CPU
-- > 20 FPS for video (640×480)
-
 ---
 
 ## Error Handling
