@@ -200,7 +200,10 @@ public:
 
     // Returns vector of detections: [[x, y, confidence], ...]
     std::vector<std::vector<double>> detect(
-        const std::vector<std::vector<uint8_t>>& image,  // 2D grayscale image
+        const uint8_t* image_data,    // Grayscale image data
+        size_t width,                 // Image width
+        size_t height,                // Image height
+        size_t stride,                // Row stride (bytes per row, usually == width for grayscale)
         const IMUData& imu_data,
         double timestamp
     );
@@ -240,16 +243,11 @@ std::vector<std::vector<double>> detect_wrapper(
         throw std::runtime_error("Image must be 2D grayscale array");
     }
 
-    // Convert numpy to std::vector
-    std::vector<std::vector<uint8_t>> image_vec;
-    uint8_t* ptr = static_cast<uint8_t*>(buf.ptr);
-    int height = buf.shape[0];
-    int width = buf.shape[1];
-
-    image_vec.resize(height);
-    for (int i = 0; i < height; i++) {
-        image_vec[i].assign(ptr + i * width, ptr + (i + 1) * width);
-    }
+    // Get image data pointer and dimensions
+    const uint8_t* image_data = static_cast<const uint8_t*>(buf.ptr);
+    size_t height = buf.shape[0];
+    size_t width = buf.shape[1];
+    size_t stride = buf.strides[0];  // Bytes per row
 
     // Extract IMU data from dict
     IMUData imu;
@@ -258,7 +256,7 @@ std::vector<std::vector<double>> detect_wrapper(
     imu.yaw = imu_data["yaw"].cast<double>();
 
     // Call C++ detect
-    return self.detect(image_vec, imu, timestamp);
+    return self.detect(image_data, width, height, stride, imu, timestamp);
 }
 
 PYBIND11_MODULE(detection_library, m) {
@@ -283,7 +281,8 @@ PYBIND11_MODULE(detection_library, m) {
 **Key Points:**
 - Constructor is exception-free, only sets parameters
 - `load_model()` handles file I/O and can throw exceptions
-- pybind11 wrapper converts numpy arrays to C++ vectors
+- Image data passed as standard pointer: `uint8_t* image_data, size_t width, size_t height, size_t stride`
+- pybind11 wrapper extracts numpy array pointer and dimensions
 - Python dict for IMU data is converted to C++ struct
 - Returns `std::vector<std::vector<double>>` (auto-converts to Python list of lists)
 
